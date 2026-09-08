@@ -1,0 +1,11 @@
+# Ignore everything except release assets
+*
+!/README.md
+!/flash.bat
+!/flash.sh
+!/firmware/
+!/firmware/**
+!/docs/
+!/docs/images/
+!/docs/images/**
+!/.gitignore
