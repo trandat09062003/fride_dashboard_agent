@@ -47,33 +47,14 @@ Hệ thống bảng điều khiển trung tâm dành cho **Tủ Lạnh Thông Mi
 
 ---
 
-## 3. Hướng Dẫn Nạp Firmware (Binary Release)
-
-Repository này phát hành trực tiếp các gói nhị phân đã biên dịch sẵn trong thư mục [`firmware/`](firmware/), cho phép bạn nạp và chạy ngay trên mạch mà không cần cấu hình môi trường code hay thư viện.
-
-Các file nhị phân tương ứng với các phân vùng bộ nhớ Flash 16MB:
-* `0x0000`: `firmware/bootloader.bin` (ESP-IDF 2nd stage bootloader)
-* `0x8000`: `firmware/partitions.bin` (Partition Table 16MB)
-* `0xe000`: `firmware/boot_app0.bin` (OTA Data selection)
-* `0x10000`: `firmware/firmware.bin` (Ứng dụng chính Smart Fridge Agent)
-
 ---
 
-### Cách 1: Nạp Trực Tiếp Qua Web (Khuyến Nghị - Đơn Giản Nhất)
-Không cần cài đặt bất kỳ phần mềm nào, chỉ cần dùng trình duyệt **Google Chrome** hoặc **Microsoft Edge**:
-1. Truy cập công cụ nạp web: [https://esp.huhn.me/](https://esp.huhn.me/) hoặc [ESP Web Tools](https://espressif.github.io/esptool-js/).
-2. Cắm cáp Type-C từ máy tính vào mạch ESP32-S3 và bấm nút **Connect** trên trang web để chọn cổng COM.
-3. Thêm các file từ thư mục `firmware/` với đúng địa chỉ offset sau:
-   * Địa chỉ `0x0`: chọn file `bootloader.bin`
-   * Địa chỉ `0x8000`: chọn file `partitions.bin`
-   * Địa chỉ `0xe000`: chọn file `boot_app0.bin`
-   * Địa chỉ `0x10000`: chọn file `firmware.bin`
-4. Bấm **Program** để nạp. Quá trình hoàn tất sau khoảng 15-30 giây.
+## 3. Hướng Dẫn Biên Dịch & Nạp Code Từ Nguồn (PlatformIO)
 
----
+Dự án hiện tại hỗ trợ nạp code trực tiếp từ mã nguồn C++ (không cần nạp file bin thủ công).
 
-### Cách 2: Nạp Nhanh Bằng 1-Click (`flash.bat` / `flash.sh`)
-* **Trên Windows**: Cắm cáp USB vào máy tính -> Nhấp đúp chuột chạy file **[`flash.bat`](flash.bat)** -> Nhập tên cổng COM (ví dụ: `COM8`) -> Nhấn Enter. Script sẽ tự động nạp toàn bộ firmware.
+### Cách 1: Nạp Tự Động Bằng 1-Click (`flash.bat` / `flash.sh`)
+* **Trên Windows**: Cắm cáp Type-C vào ESP32-S3 -> Nhấp đúp chạy **[`flash.bat`](flash.bat)** -> Nhập cổng COM (hoặc nhấn Enter để tự động nhận COM8) -> Script sẽ tự động gọi PlatformIO biên dịch mã nguồn và nạp thẳng vào vi điều khiển.
 * **Trên macOS / Linux**: Mở Terminal và chạy:
   ```bash
   chmod +x flash.sh
@@ -82,14 +63,28 @@ Không cần cài đặt bất kỳ phần mềm nào, chỉ cần dùng trình 
 
 ---
 
-### Cách 3: Nạp Bằng Dòng Lệnh `esptool`
-Nếu bạn đã có Python trên máy tính:
+### Cách 2: Biên Dịch & Nạp Qua Dòng Lệnh PlatformIO CLI
+Mở terminal tại thư mục gốc dự án và chạy:
 ```bash
-pip install esptool
-python -m esptool --chip esp32s3 -b 921600 --before default_reset --after hard_reset write_flash -z --flash_mode dio --flash_freq 80m --flash_size 16MB 0x0 firmware/bootloader.bin 0x8000 firmware/partitions.bin 0xe000 firmware/boot_app0.bin 0x10000 firmware/firmware.bin
+# 1. Biên dịch toàn bộ mã nguồn
+pio run
+
+# 2. Biên dịch và nạp trực tiếp vào ESP32-S3 (COM8)
+pio run -t upload
+
+# 3. Mở Serial Monitor để theo dõi log
+pio device monitor -b 115200
 ```
 
 ---
 
+### Cách 3: Phát Triển Trực Tiếp Trong VS Code
+1. Cài đặt tiện ích mở rộng **PlatformIO IDE** trong Visual Studio Code.
+2. Mở thư mục dự án `fride_smart`.
+3. Bấm vào biểu tượng **Build** (✓) dưới thanh trạng thái để biên dịch, hoặc **Upload** (→) để nạp code vào mạch.
+
+---
+
 ## 4. Bản Quyền & Điều Khoản Sử Dụng
-Mọi quyền sở hữu trí tuệ, thiết kế giao diện và thuật toán nhúng thuộc về tác giả. Firmware được cung cấp dưới dạng nhị phân phục vụ mục đích trải nghiệm và thử nghiệm phần cứng. Cấm sao chép, dịch ngược mã hoặc sử dụng cho mục đích thương mại khi chưa có sự đồng ý bằng văn bản của tác giả.
+Mọi quyền sở hữu trí tuệ, thiết kế giao diện và thuật toán nhúng thuộc về tác giả Vincent (@trandat09062003). Dự án phục vụ mục đích nghiên cứu, học tập và trải nghiệm sản phẩm IoT AI Agent thông minh.
+

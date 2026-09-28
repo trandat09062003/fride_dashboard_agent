@@ -1,49 +1,68 @@
 @echo off
 chcp 65001 > nul
 echo ======================================================================
-echo    SMART FRIDGE DASHBOARD AGENT - ESP32-S3 FIRMWARE FLASH TOOL
+echo    FRIDE SMART DASHBOARD AGENT - BIÊN DỊCH ^& NẠP CODE TỪ NGUỒN
 echo ======================================================================
 echo.
 
-where python >nul 2>nul
-if %errorlevel% neq 0 (
-    echo [ERROR] Không tìm thấy Python trên máy tính của bạn!
-    echo Vui lòng cài đặt Python (https://www.python.org/downloads/)
-    echo Hoặc nạp trực tiếp qua trình duyệt web tại: https://esp.huhn.me/
-    pause
-    exit /b 1
-)
-
-python -c "import esptool" >nul 2>nul
-if %errorlevel% neq 0 (
-    echo [INFO] Đang cài đặt thư viện esptool...
-    pip install esptool
+where pio >nul 2>nul
+if %errorlevel% equ 0 (
+    set PIO_CMD=pio
+) else (
+    where python >nul 2>nul
+    if %errorlevel% equ 0 (
+        python -m platformio --version >nul 2>nul
+        if %errorlevel% equ 0 (
+            set PIO_CMD=python -m platformio
+        ) else (
+            echo [INFO] Đang cài đặt PlatformIO CLI...
+            pip install platformio
+            set PIO_CMD=python -m platformio
+        )
+    ) else (
+        echo [ERROR] Không tìm thấy Python hoặc PlatformIO!
+        echo Vui lòng cài đặt PlatformIO hoặc mở dự án trong VS Code.
+        pause
+        exit /b 1
+    )
 )
 
 echo Danh sách các cổng COM khả dụng:
 powershell -Command "[System.IO.Ports.SerialPort]::getportnames()"
 echo.
 
-set /p COMPORT="Nhập cổng COM của mạch ESP32-S3 (ví dụ: COM3, COM8): "
+set /p COMPORT="Nhập cổng COM của mạch ESP32-S3 (nhấn Enter để dùng COM8 mặc định / tự động): "
 
 if "%COMPORT%"=="" (
-    echo [ERROR] Bạn chưa nhập cổng COM!
+    set UPLOAD_OPT=
+) else (
+    set UPLOAD_OPT=--upload-port %COMPORT%
+)
+
+echo.
+echo [1/2] Đang biên dịch mã nguồn dự án...
+%PIO_CMD% run
+if %errorlevel% neq 0 (
+    echo.
+    echo [ERROR] Biên dịch thất bại! Vui lòng kiểm tra thông báo lỗi ở trên.
     pause
     exit /b 1
 )
 
 echo.
-echo [1/1] Đang nạp firmware vào ESP32-S3 (%COMPORT%)...
-python -m esptool --chip esp32s3 --port %COMPORT% --baud 921600 --before default_reset --after hard_reset write_flash -z --flash_mode dio --flash_freq 80m --flash_size 16MB 0x0 firmware/bootloader.bin 0x8000 firmware/partitions.bin 0xe000 firmware/boot_app0.bin 0x10000 firmware/firmware.bin
-
-if %errorlevel% equ 0 (
+echo [2/2] Đang nạp firmware trực tiếp vào ESP32-S3...
+%PIO_CMD% run -t upload %UPLOAD_OPT%
+if %errorlevel% neq 0 (
     echo.
-    echo ======================================================================
-    echo    NẠP FIRMWARE THÀNH CÔNG! HỆ THỐNG ĐANG KHỞI ĐỘNG...
-    echo ======================================================================
-) else (
-    echo.
-    echo [ERROR] Nạp thất bại! Vui lòng nhấn giữ nút BOOT trên mạch và thử lại.
+    echo [ERROR] Nạp code thất bại! Hãy kiểm tra cáp USB hoặc nhấn giữ nút BOOT khi cắm cáp.
+    pause
+    exit /b 1
 )
 
+echo.
+echo ======================================================================
+echo    NẠP CODE THÀNH CÔNG! THIẾT BỊ ĐANG KHỞI ĐỘNG...
+echo ======================================================================
+echo.
 pause
+
