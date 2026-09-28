@@ -27,10 +27,10 @@
 // 2 = Groq LPU (Khuyên dùng: dùng chung kết nối Keep-Alive với Whisper STT -> phản hồi < 0.3s)
 #define AI_ENGINE_PRIMARY  2
 
-// Cấu hình thời gian thu âm tối đa & Smart VAD (Tự động ngắt ngay khi ngừng nói giống xiaozhi-esp32)
-#define AI_RECORD_SECONDS      3.5f
-#define AI_VAD_SILENCE_MS      420   // Tự động kết thúc thu âm sau 0.42s ngừng nói (phản hồi siêu nhanh)
-#define AI_VAD_NO_SPEECH_MS    1800  // Tự động hủy sớm sau 1.8s nếu không có tiếng nói
+// Cấu hình thời gian thu âm tối đa & Smart VAD (Tự động ngắt khi ngừng nói, hỗ trợ câu dài thoải mái)
+#define AI_RECORD_SECONDS      10.0f // Cho phép nói liên tục tối đa 10 giây (nói câu dài, giải thích chi tiết)
+#define AI_VAD_SILENCE_MS      850   // Dừng nói hẳn 0.85s mới tự ngắt (người dùng ngắt nhịp thở thoải mái không bị cắt ngang)
+#define AI_VAD_NO_SPEECH_MS    3500  // Chờ 3.5s nếu người dùng chưa kịp nói
 
 // 5. Cấu hình Zing MP3 Proxy (Chạy trên máy tính hoặc Cloud)
 #define ZING_PROXY_HOST    "192.168.110.164"

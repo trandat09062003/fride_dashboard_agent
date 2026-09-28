@@ -35,8 +35,8 @@ static mp3dec_frame_info_t info;
 static int16_t pcm_frame[MINIMP3_MAX_SAMPLES_PER_FRAME];
 static int16_t stereo_frame[MINIMP3_MAX_SAMPLES_PER_FRAME * 2];
 
-// Split text into natural, sentence-aligned chunks (<150 UTF-8 bytes) so Google TTS never returns HTTP 400
-static void split_into_chunks(const char *text, std::vector<String> &chunks, size_t max_len = 150) {
+// Split text into natural, sentence-aligned chunks (<160 UTF-8 bytes) so Google TTS speaks smoothly
+static void split_into_chunks(const char *text, std::vector<String> &chunks, size_t max_len = 160) {
     if (!text || strlen(text) == 0) return;
 
     // Clean text: strip markdown characters
@@ -77,13 +77,11 @@ static void split_into_chunks(const char *text, std::vector<String> &chunks, siz
         } else {
             current += word + " ";
             char last_c = word.charAt(word.length() - 1);
-            if (last_c == '.' || last_c == '!' || last_c == '?' || last_c == ';' || last_c == ':') {
-                current.trim();
-                if (current.length() > 0) {
-                    chunks.push_back(current);
-                }
-                current = "";
-            } else if (last_c == ',' && current.length() >= 80) {
+            bool is_major_punct = (last_c == '.' || last_c == '!' || last_c == '?' || last_c == ';' || last_c == ':');
+            
+            // Only split on major punctuation if the current chunk already has sufficient body (>= 75 bytes)
+            // This prevents chopping short sentences (like "Chào bạn!") into tiny 1-second fragments!
+            if ((is_major_punct && current.length() >= 75) || (last_c == ',' && current.length() >= 100)) {
                 current.trim();
                 if (current.length() > 0) {
                     chunks.push_back(current);
@@ -100,6 +98,8 @@ static void split_into_chunks(const char *text, std::vector<String> &chunks, siz
 }
 
 static WiFiClient s_tts_client;
+static IPAddress s_google_ip(0, 0, 0, 0);
+static unsigned long s_last_dns_ms = 0;
 
 static bool internal_speak_single_chunk(const char *chunk_utf8, void (*on_level_cb)(int level), int &current_hz) {
     if (!chunk_utf8 || strlen(chunk_utf8) == 0) return true;
@@ -112,12 +112,28 @@ static bool internal_speak_single_chunk(const char *chunk_utf8, void (*on_level_
 
     bool header_ok = false;
 
+    // Fast DNS cache (refresh every 5 minutes)
+    if (s_google_ip == IPAddress(0, 0, 0, 0) || (millis() - s_last_dns_ms > 300000)) {
+        if (WiFi.hostByName(host, s_google_ip)) {
+            s_last_dns_ms = millis();
+            Serial.printf("[TTS] Resolved %s -> %s\n", host, s_google_ip.toString().c_str());
+        }
+    }
+
     // Reset client for a clean, deterministic HTTP connection per chunk
     s_tts_client.stop();
     s_tts_client.setTimeout(5);
 
     for (int attempt = 0; attempt < 3; attempt++) {
-        if (!s_tts_client.connect(host, 80)) {
+        bool connected = false;
+        if (s_google_ip != IPAddress(0, 0, 0, 0)) {
+            connected = s_tts_client.connect(s_google_ip, 80);
+        }
+        if (!connected) {
+            connected = s_tts_client.connect(host, 80);
+        }
+
+        if (!connected) {
             Serial.printf("[TTS] Connection attempt %d to %s:80 failed!\n", attempt + 1, host);
             s_tts_client.stop();
             vTaskDelay(pdMS_TO_TICKS(100));
@@ -293,7 +309,7 @@ static bool internal_speak(const char *text_utf8, void (*on_level_cb)(int level)
     }
 
     std::vector<String> chunks;
-    split_into_chunks(text_utf8, chunks, 150);
+    split_into_chunks(text_utf8, chunks, 160);
     Serial.printf("[TTS] Total text len: %d bytes | Split into %d chunks\n", (int)strlen(text_utf8), (int)chunks.size());
 
     if (chunks.empty()) return false;

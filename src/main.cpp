@@ -685,9 +685,9 @@ static void get_current_time_str(char *time_short, size_t short_sz, char *date_f
 static void ai_agent_task_worker(void *pvParam) {
     uint32_t t_turn_start = millis();
     if (!voice_test_buffer) {
-        voice_test_buffer = (int16_t *)ps_malloc(AUDIO_SAMPLE_RATE * 6 * sizeof(int16_t));
+        voice_test_buffer = (int16_t *)ps_malloc(AUDIO_SAMPLE_RATE * 11 * sizeof(int16_t));
         if (!voice_test_buffer) {
-            voice_test_buffer = (int16_t *)malloc(AUDIO_SAMPLE_RATE * 5 * sizeof(int16_t));
+            voice_test_buffer = (int16_t *)malloc(AUDIO_SAMPLE_RATE * 10 * sizeof(int16_t));
         }
     }
 
