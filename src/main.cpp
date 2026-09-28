@@ -3182,7 +3182,7 @@ void setup() {
     // 4. Initialize Audio Codec ES8311 (Mode 3: DOUT=15, DIN=16, PA=LOW (0) Active SC8002B)
     ES8311_Audio::init(SPEAKER_PA_EN, I2S_MCLK, I2S_BCLK, I2S_WS, I2S_DOUT, I2S_DIN, 3);
     ES8311_Audio::set_volume(100);       // Max volume (100%)
-    ES8311_Audio::play_startup_chime();  // Play startup chime in Mode 3!
+    // Khởi động hoàn toàn yên lặng (không phát chuông báo khi bật nguồn)
 
     // 5. Initialize ST77922 Display
     tft.begin(40000000);

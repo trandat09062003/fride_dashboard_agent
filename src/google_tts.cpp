@@ -28,15 +28,15 @@ static String url_encode(const char *str) {
 namespace GoogleTTS {
 
 // Static persistent decoder buffers (PSRAM allocated)
-static const size_t max_mp3_size = 384 * 1024; // 384KB in PSRAM (~35s of audio per chunk)
+static const size_t max_mp3_size = 384 * 1024; // 384KB in PSRAM (~35s of audio)
 static uint8_t *mp3_buf = nullptr;
 static mp3dec_t mp3d;
 static mp3dec_frame_info_t info;
 static int16_t pcm_frame[MINIMP3_MAX_SAMPLES_PER_FRAME];
 static int16_t stereo_frame[MINIMP3_MAX_SAMPLES_PER_FRAME * 2];
 
-// Split text into natural, sentence-aligned chunks (<110 UTF-8 bytes) so Google TTS never returns HTTP 400/404
-static void split_into_chunks(const char *text, std::vector<String> &chunks, size_t max_len = 110) {
+// Split text into natural, sentence-aligned chunks (<150 UTF-8 bytes) so Google TTS never returns HTTP 400
+static void split_into_chunks(const char *text, std::vector<String> &chunks, size_t max_len = 150) {
     if (!text || strlen(text) == 0) return;
 
     // Clean text: strip markdown characters
@@ -83,7 +83,7 @@ static void split_into_chunks(const char *text, std::vector<String> &chunks, siz
                     chunks.push_back(current);
                 }
                 current = "";
-            } else if (last_c == ',' && current.length() >= 60) {
+            } else if (last_c == ',' && current.length() >= 80) {
                 current.trim();
                 if (current.length() > 0) {
                     chunks.push_back(current);
@@ -114,13 +114,13 @@ static bool internal_speak_single_chunk(const char *chunk_utf8, void (*on_level_
 
     // Reset client for a clean, deterministic HTTP connection per chunk
     s_tts_client.stop();
-    s_tts_client.setTimeout(4);
+    s_tts_client.setTimeout(5);
 
-    for (int attempt = 0; attempt < 2; attempt++) {
+    for (int attempt = 0; attempt < 3; attempt++) {
         if (!s_tts_client.connect(host, 80)) {
             Serial.printf("[TTS] Connection attempt %d to %s:80 failed!\n", attempt + 1, host);
             s_tts_client.stop();
-            vTaskDelay(pdMS_TO_TICKS(50));
+            vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
 
@@ -133,7 +133,7 @@ static bool internal_speak_single_chunk(const char *chunk_utf8, void (*on_level_
 
         if (s_tts_client.write((const uint8_t *)req.c_str(), req.length()) == 0) {
             s_tts_client.stop();
-            vTaskDelay(pdMS_TO_TICKS(50));
+            vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
 
@@ -146,7 +146,7 @@ static bool internal_speak_single_chunk(const char *chunk_utf8, void (*on_level_
 
         if (s_tts_client.available() == 0) {
             s_tts_client.stop();
-            vTaskDelay(pdMS_TO_TICKS(50));
+            vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
 
@@ -177,66 +177,50 @@ static bool internal_speak_single_chunk(const char *chunk_utf8, void (*on_level_
         return false;
     }
 
-    // Now s_tts_client stream contains 100% PURE raw MP3 frames!
-    mp3dec_init(&mp3d);
+    // Step 1: Download full MP3 data into PSRAM buffer first (~300-500ms total)
+    // This completely decouples network jitter/socket stalls from audio I2S DMA playback!
     size_t mp3_len = 0;
-    size_t decode_offset = 0;
-    int frame_count = 0;
-    bool stream_done = false;
-    unsigned long last_rx_ms = millis();
-    unsigned long start_stream_ms = millis();
+    unsigned long start_dl = millis();
+    unsigned long last_data_ms = millis();
 
-    while (true) {
-        // 1. Read available incoming MP3 bytes into mp3_buf
-        while (s_tts_client.available() > 0 && mp3_len < max_mp3_size) {
-            size_t avail = s_tts_client.available();
-            if (mp3_len + avail > max_mp3_size) {
-                avail = max_mp3_size - mp3_len;
-            }
-            if (avail == 0) break;
-            size_t r = s_tts_client.readBytes(mp3_buf + mp3_len, avail);
+    while (s_tts_client.connected() || s_tts_client.available()) {
+        int avail = s_tts_client.available();
+        if (avail > 0) {
+            int to_read = avail;
+            if (mp3_len + to_read > max_mp3_size) to_read = max_mp3_size - mp3_len;
+            if (to_read <= 0) break;
+            int r = s_tts_client.readBytes((char *)(mp3_buf + mp3_len), to_read);
             if (r > 0) {
                 mp3_len += r;
-                last_rx_ms = millis();
-            } else {
-                break;
+                last_data_ms = millis();
             }
+        } else {
+            if (!s_tts_client.connected()) break;
+            if (millis() - last_data_ms > 1500) break;
+            vTaskDelay(pdMS_TO_TICKS(3));
         }
+    }
+    s_tts_client.stop();
 
-        if (!stream_done) {
-            if (!s_tts_client.connected() && s_tts_client.available() == 0) {
-                stream_done = true;
-            } else if (millis() - last_rx_ms > 3500) {
-                stream_done = true;
-            }
-        }
+    Serial.printf("[TTS] Downloaded %u bytes of MP3 in %lu ms\n", (unsigned int)mp3_len, millis() - start_dl);
+    if (mp3_len < 128) {
+        Serial.println("[TTS] Insufficient MP3 data received!");
+        return false;
+    }
 
-        // If completed reading and completed decoding, chunk is fully finished!
-        if (stream_done && decode_offset >= mp3_len) {
-            break;
-        }
+    // Step 2: Decode and play the entire buffered MP3 continuously with ZERO network stalls
+    mp3dec_init(&mp3d);
+    size_t decode_offset = 0;
+    int frame_count = 0;
+    unsigned long start_play_ms = millis();
 
-        // Wait until we have at least 2048 bytes buffered ahead of decoder before decoding next frame
-        if (!stream_done && (mp3_len - decode_offset < 2048)) {
-            vTaskDelay(pdMS_TO_TICKS(2));
-            continue;
-        }
-
-        if (decode_offset >= mp3_len) {
-            if (stream_done) break;
-            vTaskDelay(pdMS_TO_TICKS(2));
-            continue;
-        }
-
+    while (decode_offset < mp3_len) {
         int samples = mp3dec_decode_frame(&mp3d, mp3_buf + decode_offset, mp3_len - decode_offset, pcm_frame, &info);
         if (info.frame_bytes > 0) {
             decode_offset += info.frame_bytes;
 
             if (samples > 0) {
                 frame_count++;
-                if (frame_count == 1) {
-                    Serial.printf("[TTS] Chunk first frame played in %lu ms\n", millis() - start_stream_ms);
-                }
 
                 if (info.hz > 0 && info.hz != current_hz) {
                     current_hz = info.hz;
@@ -276,12 +260,7 @@ static bool internal_speak_single_chunk(const char *chunk_utf8, void (*on_level_
                 }
             }
         } else {
-            // Frame bytes <= 0
-            if (!stream_done) {
-                vTaskDelay(pdMS_TO_TICKS(2));
-                continue;
-            }
-            // If stream is done and less than 128 bytes remain, finish cleanly
+            // End of stream or padding: if less than 128 bytes remain, finish cleanly
             if (mp3_len - decode_offset < 128) {
                 break;
             }
@@ -290,8 +269,7 @@ static bool internal_speak_single_chunk(const char *chunk_utf8, void (*on_level_
         }
     }
 
-    s_tts_client.stop();
-    Serial.printf("[TTS] Chunk finished: %d frames played, %u bytes\n", frame_count, (unsigned int)decode_offset);
+    Serial.printf("[TTS] Chunk playback complete: %d frames played in %lu ms\n", frame_count, millis() - start_play_ms);
     return (frame_count > 0);
 }
 
@@ -315,7 +293,7 @@ static bool internal_speak(const char *text_utf8, void (*on_level_cb)(int level)
     }
 
     std::vector<String> chunks;
-    split_into_chunks(text_utf8, chunks, 110);
+    split_into_chunks(text_utf8, chunks, 150);
     Serial.printf("[TTS] Total text len: %d bytes | Split into %d chunks\n", (int)strlen(text_utf8), (int)chunks.size());
 
     if (chunks.empty()) return false;
