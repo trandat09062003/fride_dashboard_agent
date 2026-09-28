@@ -1,6 +1,6 @@
 #include "google_tts.h"
 #include <WiFi.h>
-#include <WiFiClient.h>
+#include <HTTPClient.h>
 #include <driver/i2s.h>
 #include <vector>
 #include "es8311_driver.h"
@@ -35,8 +35,10 @@ static mp3dec_frame_info_t info;
 static int16_t pcm_frame[MINIMP3_MAX_SAMPLES_PER_FRAME];
 static int16_t stereo_frame[MINIMP3_MAX_SAMPLES_PER_FRAME * 2];
 
-// Split text into natural, sentence-aligned chunks (<160 UTF-8 bytes) so Google TTS speaks smoothly
-static void split_into_chunks(const char *text, std::vector<String> &chunks, size_t max_len = 160) {
+// Split text into natural, sentence-aligned chunks (<170 UTF-8 characters)
+// Only splits on major punctuation if chunk is already long (>=110 chars)
+// This ensures full AI answers (30-50 words) are kept in 1 single seamless chunk!
+static void split_into_chunks(const char *text, std::vector<String> &chunks, size_t max_len = 170) {
     if (!text || strlen(text) == 0) return;
 
     // Clean text: strip markdown characters
@@ -77,11 +79,11 @@ static void split_into_chunks(const char *text, std::vector<String> &chunks, siz
         } else {
             current += word + " ";
             char last_c = word.charAt(word.length() - 1);
-            bool is_major_punct = (last_c == '.' || last_c == '!' || last_c == '?' || last_c == ';' || last_c == ':');
+            bool is_major_punct = (last_c == '.' || last_c == '!' || last_c == '?' || last_c == ';' || last_c == ':' || last_c == '\n');
             
-            // Only split on major punctuation if the current chunk already has sufficient body (>= 75 bytes)
-            // This prevents chopping short sentences (like "Chào bạn!") into tiny 1-second fragments!
-            if ((is_major_punct && current.length() >= 75) || (last_c == ',' && current.length() >= 100)) {
+            // Only split on major punctuation if the current chunk already has >= 110 characters
+            // This prevents chopping normal answers into multiple fragments!
+            if (is_major_punct && current.length() >= 110) {
                 current.trim();
                 if (current.length() > 0) {
                     chunks.push_back(current);
@@ -97,126 +99,52 @@ static void split_into_chunks(const char *text, std::vector<String> &chunks, siz
     }
 }
 
-static WiFiClient s_tts_client;
-static IPAddress s_google_ip(0, 0, 0, 0);
-static unsigned long s_last_dns_ms = 0;
-
 static bool internal_speak_single_chunk(const char *chunk_utf8, void (*on_level_cb)(int level), int &current_hz) {
     if (!chunk_utf8 || strlen(chunk_utf8) == 0) return true;
 
     unsigned long t_req = millis();
     Serial.printf("[TTS] Voice chunk (%d chars): \"%s\"\n", (int)strlen(chunk_utf8), chunk_utf8);
 
-    const char *host = "translate.google.com";
-    String path = "/translate_tts?ie=UTF-8&tl=vi&client=tw-ob&q=" + url_encode(chunk_utf8);
+    String url = "http://translate.google.com/translate_tts?ie=UTF-8&tl=vi&client=tw-ob&q=" + url_encode(chunk_utf8);
 
-    bool header_ok = false;
+    HTTPClient http;
+    http.begin(url);
+    http.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+    http.setTimeout(8000);
 
-    // Fast DNS cache (refresh every 5 minutes)
-    if (s_google_ip == IPAddress(0, 0, 0, 0) || (millis() - s_last_dns_ms > 300000)) {
-        if (WiFi.hostByName(host, s_google_ip)) {
-            s_last_dns_ms = millis();
-            Serial.printf("[TTS] Resolved %s -> %s\n", host, s_google_ip.toString().c_str());
-        }
-    }
-
-    // Reset client for a clean, deterministic HTTP connection per chunk
-    s_tts_client.stop();
-    s_tts_client.setTimeout(5);
-
-    for (int attempt = 0; attempt < 3; attempt++) {
-        bool connected = false;
-        if (s_google_ip != IPAddress(0, 0, 0, 0)) {
-            connected = s_tts_client.connect(s_google_ip, 80);
-        }
-        if (!connected) {
-            connected = s_tts_client.connect(host, 80);
-        }
-
-        if (!connected) {
-            Serial.printf("[TTS] Connection attempt %d to %s:80 failed!\n", attempt + 1, host);
-            s_tts_client.stop();
-            vTaskDelay(pdMS_TO_TICKS(100));
-            continue;
-        }
-
-        // Use HTTP/1.0 with Connection: close to guarantee unchunked, pure raw MP3 stream!
-        String req = "GET " + path + " HTTP/1.0\r\n" +
-                     "Host: " + host + "\r\n" +
-                     "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n" +
-                     "Accept: */*\r\n" +
-                     "Connection: close\r\n\r\n";
-
-        if (s_tts_client.write((const uint8_t *)req.c_str(), req.length()) == 0) {
-            s_tts_client.stop();
-            vTaskDelay(pdMS_TO_TICKS(100));
-            continue;
-        }
-
-        // Wait for response headers
-        unsigned long start_wait = millis();
-        while (s_tts_client.connected() && s_tts_client.available() == 0) {
-            if (millis() - start_wait > 4000) break;
-            vTaskDelay(pdMS_TO_TICKS(2));
-        }
-
-        if (s_tts_client.available() == 0) {
-            s_tts_client.stop();
-            vTaskDelay(pdMS_TO_TICKS(100));
-            continue;
-        }
-
-        // Parse status line
-        String status_line = s_tts_client.readStringUntil('\n');
-        status_line.trim();
-        if (!status_line.startsWith("HTTP/1.0 200") && !status_line.startsWith("HTTP/1.1 200")) {
-            Serial.printf("[TTS] Non-200 HTTP status: %s\n", status_line.c_str());
-            s_tts_client.stop();
-            return false;
-        }
-
-        // Skip headers until empty line (\r\n\r\n)
-        while (s_tts_client.connected() || s_tts_client.available()) {
-            String line = s_tts_client.readStringUntil('\n');
-            line.trim();
-            if (line.length() == 0) {
-                header_ok = true;
-                break;
-            }
-        }
-
-        if (header_ok) break;
-    }
-
-    if (!header_ok) {
-        s_tts_client.stop();
+    int httpCode = http.GET();
+    if (httpCode != HTTP_CODE_OK) {
+        Serial.printf("[TTS] HTTP GET failed, error: %s (code %d)\n", http.errorToString(httpCode).c_str(), httpCode);
+        http.end();
         return false;
     }
 
-    // Step 1: Download full MP3 data into PSRAM buffer first (~300-500ms total)
-    // This completely decouples network jitter/socket stalls from audio I2S DMA playback!
+    // Step 1: Download full MP3 stream directly into PSRAM buffer
+    WiFiClient *stream = http.getStreamPtr();
     size_t mp3_len = 0;
     unsigned long start_dl = millis();
-    unsigned long last_data_ms = millis();
+    unsigned long last_rx_ms = millis();
 
-    while (s_tts_client.connected() || s_tts_client.available()) {
-        int avail = s_tts_client.available();
+    while (http.connected() || (stream && stream->available())) {
+        if (!stream) break;
+        int avail = stream->available();
         if (avail > 0) {
             int to_read = avail;
             if (mp3_len + to_read > max_mp3_size) to_read = max_mp3_size - mp3_len;
             if (to_read <= 0) break;
-            int r = s_tts_client.readBytes((char *)(mp3_buf + mp3_len), to_read);
+            int r = stream->readBytes((char *)(mp3_buf + mp3_len), to_read);
             if (r > 0) {
                 mp3_len += r;
-                last_data_ms = millis();
+                last_rx_ms = millis();
             }
         } else {
-            if (!s_tts_client.connected()) break;
-            if (millis() - last_data_ms > 1500) break;
-            vTaskDelay(pdMS_TO_TICKS(3));
+            if (!http.connected()) break;
+            if (millis() - last_rx_ms > 2000) break;
+            vTaskDelay(pdMS_TO_TICKS(5));
         }
     }
-    s_tts_client.stop();
+
+    http.end();
 
     Serial.printf("[TTS] Downloaded %u bytes of MP3 in %lu ms\n", (unsigned int)mp3_len, millis() - start_dl);
     if (mp3_len < 128) {
@@ -309,7 +237,7 @@ static bool internal_speak(const char *text_utf8, void (*on_level_cb)(int level)
     }
 
     std::vector<String> chunks;
-    split_into_chunks(text_utf8, chunks, 160);
+    split_into_chunks(text_utf8, chunks, 170);
     Serial.printf("[TTS] Total text len: %d bytes | Split into %d chunks\n", (int)strlen(text_utf8), (int)chunks.size());
 
     if (chunks.empty()) return false;
@@ -320,10 +248,15 @@ static bool internal_speak(const char *text_utf8, void (*on_level_cb)(int level)
     int current_hz = 0;
     bool any_success = false;
     for (size_t i = 0; i < chunks.size(); i++) {
+        Serial.printf("[TTS] >>> Playing chunk %d/%d (%d chars) <<<\n",
+                      (int)(i + 1), (int)chunks.size(), (int)chunks[i].length());
         bool ok = internal_speak_single_chunk(chunks[i].c_str(), on_level_cb, current_hz);
         if (ok) {
             any_success = true;
+        } else {
+            Serial.printf("[TTS] Chunk %d/%d failed!\n", (int)(i + 1), (int)chunks.size());
         }
+        vTaskDelay(pdMS_TO_TICKS(30)); // Clean pause between chunks
     }
 
     // Clear DMA buffer, shut down PA amplifier to prevent idle hum/beep, and restore 16kHz mic clock
