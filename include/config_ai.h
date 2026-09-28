@@ -29,8 +29,8 @@
 
 // Cấu hình thời gian thu âm tối đa & Smart VAD (Tự động ngắt khi ngừng nói, hỗ trợ câu dài thoải mái)
 #define AI_RECORD_SECONDS      10.0f // Cho phép nói liên tục tối đa 10 giây (nói câu dài, giải thích chi tiết)
-#define AI_VAD_SILENCE_MS      850   // Dừng nói hẳn 0.85s mới tự ngắt (người dùng ngắt nhịp thở thoải mái không bị cắt ngang)
-#define AI_VAD_NO_SPEECH_MS    3500  // Chờ 3.5s nếu người dùng chưa kịp nói
+#define AI_VAD_SILENCE_MS      450   // Dừng nói hẳn 0.85s mới tự ngắt (người dùng ngắt nhịp thở thoải mái không bị cắt ngang)
+#define AI_VAD_NO_SPEECH_MS    2500  // Chờ 3.5s nếu người dùng chưa kịp nói
 
 // 5. Cấu hình Zing MP3 Proxy (Chạy trên máy tính hoặc Cloud)
 #define ZING_PROXY_HOST    "192.168.110.164"

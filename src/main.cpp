@@ -62,7 +62,7 @@ static lv_obj_t *lbl_time4 = nullptr;
 static int s_battery_pct = 100;
 static int s_battery_mv = 4150;
 static float s_battery_mv_ema = 0.0f;
-static bool s_low_bat_silent_mode = true; // Tắt chế độ kêu liên tục khi pin yếu (Mặc định: Bật bảo vệ)
+static bool s_low_bat_silent_mode = false; // Loa luôn hoạt động đầy đủ
 static lv_obj_t *lbl_bat_val = nullptr;
 
 static void read_battery_voltage() {
@@ -82,8 +82,8 @@ static void read_battery_voltage() {
     if (pct > 100) pct = 100;
     s_battery_pct = pct;
 
-    // Tắt hoàn toàn còi và âm cảnh báo liên tục khi pin yếu
-    if (s_low_bat_silent_mode || s_battery_mv < 3550) {
+    // Chỉ ngắt âm báo nếu pin thực sự cạn kiệt (< 3.1V) để bảo vệ mạch
+    if (s_battery_mv < 3100) {
         ES8311_Audio::set_low_battery_quiet(true);
     } else {
         ES8311_Audio::set_low_battery_quiet(false);
@@ -366,13 +366,10 @@ static void my_touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data
                     if (buf[i * 7] & 0x80) {
                         int16_t x = ((buf[i * 7] & 0x3F) << 8) | buf[i * 7 + 1];
                         int16_t y = ((buf[i * 7 + 2] & 0x3F) << 8) | buf[i * 7 + 3];
-                        int16_t dx = x - last_x, dy = y - last_y;
-                        if (dx > 3 || dx < -3 || dy > 3 || dy < -3) {
-                            last_x = x;
-                            last_y = y;
-                        }
-                        data->point.x = last_x;
-                        data->point.y = last_y;
+                        data->point.x = x;
+                        data->point.y = y;
+                        last_x = x;
+                        last_y = y;
 
                         s_last_activity_time = millis();
                         if (s_screen_sleeping) {
@@ -459,13 +456,11 @@ static void screen_gesture_cb(lv_event_t *e) {
         if (curr < 3) {
             lv_tabview_set_act(tv, curr + 1, LV_ANIM_ON);
             update_nav_highlight(curr + 1);
-            ES8311_Audio::play_touch_sound(1400, 30);
         }
     } else if (dir == LV_DIR_RIGHT) {
         if (curr > 0) {
             lv_tabview_set_act(tv, curr - 1, LV_ANIM_ON);
             update_nav_highlight(curr - 1);
-            ES8311_Audio::play_touch_sound(1000, 30);
         }
     }
 }
@@ -2148,7 +2143,6 @@ void build_smart_fridge_ui() {
         lv_obj_t *tabview = lv_event_get_target(e);
         uint16_t act_tab = lv_tabview_get_tab_act(tabview);
         update_nav_highlight(act_tab);
-        ES8311_Audio::play_touch_sound(1200, 20);
     }, LV_EVENT_VALUE_CHANGED, NULL);
 
     lv_obj_t *t1 = lv_tabview_add_tab(tv, "Trang chủ");
@@ -3242,6 +3236,7 @@ void setup() {
     wifi_prefs.end();
 
     WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(true);          // Passive non-blocking background reconnection
     WiFi.setSleep(false);                 // Disable sleep: maximum Wi-Fi sensitivity
     WiFi.setTxPower(WIFI_POWER_19_5dBm);  // Maximum RF power: 20dBm
 
@@ -3276,19 +3271,13 @@ void setup() {
 void loop() {
     lv_timer_handler();
 
-    // Wi-Fi Watchdog & Auto-Reconnect: Giữ kết nối 24/7 ngầm ngay cả khi tắt màn hình, không bao giờ ngắt session
+    // Wi-Fi Auto-Reconnect: Duy trì kết nối ngầm mượt mà, không block CPU hay làm giật màn hình
     static uint32_t s_last_wifi_retry = 0;
     if (WiFi.status() != WL_CONNECTED && !wifi_full_screen && !s_wifi_scanning_active) {
-        if (cur_wifi_ssid.length() > 0 && (millis() - s_last_wifi_retry > 7000)) {
+        if (cur_wifi_ssid.length() > 0 && (millis() - s_last_wifi_retry > 45000)) {
             s_last_wifi_retry = millis();
-            Serial.printf("[WIFI-WATCHDOG] Duy trì mạng đã lưu: %s...\n", cur_wifi_ssid.c_str());
-            WiFi.disconnect(false, false);
-            delay(20);
-            if (cur_wifi_pass.length() > 0) {
-                WiFi.begin(cur_wifi_ssid.c_str(), cur_wifi_pass.c_str());
-            } else {
-                WiFi.begin(cur_wifi_ssid.c_str());
-            }
+            Serial.printf("[WIFI] Auto-reconnecting to: %s...\n", cur_wifi_ssid.c_str());
+            WiFi.reconnect();
             update_wifi_ui_status();
         }
     }
@@ -3381,5 +3370,5 @@ void loop() {
         }
     }
 
-    delay(5);
+    delay(1);
 }
